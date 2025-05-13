@@ -1,0 +1,11 @@
+[package]
+name = "starlight-tokio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Make trait can be async
+async-trait = "0.1"

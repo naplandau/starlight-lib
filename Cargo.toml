@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "starlight-axum", "starlight-protocol",
+    "starlight-tokio"
+]

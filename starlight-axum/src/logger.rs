@@ -2,6 +2,7 @@ use crate::resource::get_resource;
 use opentelemetry_otlp::{LogExporter, WithExportConfig};
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use std::fmt::Debug;
+use std::net::SocketAddr;
 use std::sync::OnceLock;
 use time::{OffsetDateTime, format_description};
 use time_tz::ToTimezone;
@@ -14,7 +15,7 @@ static SDK_LOGGER_PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
 pub fn get_logger_provider() -> &'static SdkLoggerProvider {
     SDK_LOGGER_PROVIDER
         .get()
-        .expect("Failed to get logger provider")
+        .expect("Failed to get a logger provider")
 }
 
 pub fn get_or_init_logger_provider(oltp_grpc_url: &str) -> SdkLoggerProvider {
@@ -60,7 +61,7 @@ where
         let now = OffsetDateTime::now_utc().to_timezone(system_tz);
 
         let format = format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3] [offset_hour sign:mandatory]:[offset_minute]").expect("wrong time format");
-        let timestamp = now.format(&format).expect("Failed to get timestamp");
+        let timestamp = now.format(&format).expect("Failed to get a timestamp");
         write!(writer, "{}", timestamp)?;
 
         let level = event.metadata().level();
@@ -144,13 +145,14 @@ where
 use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::Request;
-use axum::http;
-use axum::http::StatusCode;
+use axum::{http, Extension};
+use axum::http::{Extensions, StatusCode};
 use axum::http::header;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
 use std::time::Instant;
+use headers::HeaderValue;
 
 pub async fn print_request_response(
     req: Request,
@@ -158,8 +160,9 @@ pub async fn print_request_response(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let _req_start = Instant::now();
 
+    let req_ext = req.extensions().clone();
     let (parts, body) = req.into_parts();
-    let bytes = buffer_and_print_request(&parts, body).await?;
+    let bytes = buffer_and_print_request(&parts, body, req_ext).await?;
     let req = Request::from_parts(parts, Body::from(bytes));
 
     let res = next.run(req).await;
@@ -174,53 +177,51 @@ pub async fn print_request_response(
 async fn buffer_and_print_request<B>(
     parts: &http::request::Parts,
     body: B,
+    extension: Extensions
 ) -> Result<Bytes, (StatusCode, String)>
 where
     B: axum::body::HttpBody<Data = Bytes>,
     B::Error: std::fmt::Display,
 {
-    let bytes = match body.collect().await {
-        Ok(bytes) => bytes.to_bytes(),
-        Err(err) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("failed to read body: {}", err),
-            ));
-        }
-    };
+    info!("----- Start Request");
 
     let headers = &parts.headers;
-    info!("----- Start Request ",);
-    info!("header: {:#?}", headers);
-    info!(
-        "user-agent: {:#?}",
-        headers
-            .get(header::USER_AGENT)
-            .unwrap_or(&header::HeaderValue::from_str("").unwrap())
-    );
+    info!("headers: {:#?}", headers);
 
-    // let s = if let Some(peer) = parts.connection_info().peer_addr() {
-    //     (*peer).to_string()
-    // } else {
-    //     "-".to_string()
-    // };
-    // info!("{:#?}: {:#?}", header::FROM.as_str(), s);
+    if let Some(user_agent) = headers.get(header::USER_AGENT) {
+        info!("{}: {:#?}", header::USER_AGENT, user_agent);
+    }
 
-    if headers.get(header::AUTHORIZATION).is_some() {
-        info!(
-            "{:#?}: \"****************************\"",
-            header::AUTHORIZATION.as_str()
-        );
+    if let Some(forwarded) = parts.headers.get(header::FORWARDED) {
+        info!("{}: {:#?}", header::FORWARDED, forwarded.to_str());
+    }
+
+    // Get from socket (if Axum extensions were set up)
+    if let Some(source_addr) = extension.get::<SocketAddr>() {
+        info!("ip: {:#?}", source_addr.ip().to_string());
+    }
+
+    if let Some(_) = headers.get(header::AUTHORIZATION) {
+        info!("{:#?}: \"****************************\"", header::AUTHORIZATION.as_str());
     }
 
     info!("uri: {:#?} {:#?}", &parts.method, &parts.uri);
     info!("version: {:#?}", &parts.version);
 
-    if let Ok(body) = std::str::from_utf8(&bytes) {
-        info!("request payload: {:?}", body);
-    }
 
-    Ok(bytes)
+    match body.collect().await {
+        Ok(bytes) => {
+            let bytes = bytes.to_bytes();
+            info!("request payload: {:?}", String::from_utf8_lossy(&bytes));
+            Ok(bytes)
+        },
+        Err(err) => {
+            Err((
+                StatusCode::BAD_REQUEST,
+                format!("failed to read request body: {}", err),
+            ))
+        }
+    }
 }
 
 async fn buffer_and_print_response<B>(
@@ -231,21 +232,20 @@ where
     B: axum::body::HttpBody<Data = Bytes>,
     B::Error: std::fmt::Display,
 {
-    let bytes = match body.collect().await {
-        Ok(bytes) => bytes.to_bytes(),
+
+    match body.collect().await {
+        Ok(bytes) => {
+            let bytes = bytes.to_bytes();
+            info!("response payload: {:?}", String::from_utf8_lossy(&bytes));
+            info!("----- END Request in {:?} ms", start_time.elapsed());
+            Ok(bytes)
+        },
         Err(err) => {
-            return Err((
+            info!("----- END Request in {:?} ms", start_time.elapsed());
+            Err((
                 StatusCode::BAD_REQUEST,
-                format!("failed to read body: {}", err),
-            ));
+                format!("failed to parse response body: {}", err),
+            ))
         }
-    };
-
-    if let Ok(body) = std::str::from_utf8(&bytes) {
-        info!("response payload: {:?}", body);
     }
-
-    info!("----- END Request in {:?} ms", start_time.elapsed());
-
-    Ok(bytes)
 }

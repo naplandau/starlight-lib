@@ -7,3 +7,12 @@ pub mod middleware;
 
 #[macro_use]
 extern crate tracing;
+
+pub(crate) fn get_env_or_panic(variable: &str) -> String {
+    std::env::var(variable).expect(format!("{} is not set", variable).as_str())
+}
+
+pub(crate) fn get_env_or_default(variable: &str, default: String) -> String {
+    std::env::var(variable).unwrap_or(default)
+}
+

@@ -11,27 +11,24 @@ use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use crate::{get_env_or_default, get_env_or_panic};
 
-pub fn config_oltp(oltp_grpc_url: &str, ) -> Result<WorkerGuard, Box<dyn Error + Send + Sync + 'static>> {
+pub fn config_oltp(
+    oltp_grpc_url: &str,
+) -> Result<WorkerGuard, Box<dyn Error + Send + Sync + 'static>> {
     let tracer_provider = get_or_init_tracer_provider(oltp_grpc_url);
     let logger_provider = get_or_init_logger_provider(oltp_grpc_url);
     let meter_provider = get_or_init_meter_provider(oltp_grpc_url);
     global::set_tracer_provider(tracer_provider.clone());
     global::set_meter_provider(meter_provider.clone());
 
-    let tracer = tracer_provider.tracer(env!("CARGO_PKG_NAME"));
+    let tracer = tracer_provider.tracer(get_env_or_panic("CARGO_PKG_NAME"));
     // Create a new OpenTelemetryTracingBridge using the above LoggerProvider.
     let layer = OpenTelemetryTracingBridge::new(&logger_provider);
 
-    let file_appender = tracing_appender::rolling::minutely(".logs", env!("CARGO_PKG_NAME"));
+    let file_appender =
+        tracing_appender::rolling::minutely(".logs", get_env_or_panic("CARGO_PKG_NAME"));
     let (nonblocking_file, _guard_file) = tracing_appender::non_blocking(file_appender);
-
-    dotenv::dotenv().ok();
-    unsafe {
-        std::env::set_var("RUST_LOG", "info");
-        std::env::set_var("RUST_LOG_STYLE", "always");
-        std::env::set_var("RUST_BACKTRACE", "full"); // debug verbose mode
-    }
 
     let file_logger = tracing_subscriber::fmt::layer()
         .event_format(CustomLogFormatter)
@@ -41,10 +38,7 @@ pub fn config_oltp(oltp_grpc_url: &str, ) -> Result<WorkerGuard, Box<dyn Error +
         .event_format(CustomLogFormatter)
         .with_writer(std::io::stdout);
 
-    let log_level_filter = EnvFilter::new(
-        std::env::var("RUST_LOG")
-            .unwrap_or_else(|_| "debug,axum_web_server=debug,tower_http=trace".into()),
-    );
+    let log_level_filter = EnvFilter::new(get_env_or_default("RUST_LOG", "debug,axum_web_server=debug,tower_http=trace".to_owned()), );
 
     global::set_text_map_propagator(TraceContextPropagator::new());
     tracing_subscriber::registry()

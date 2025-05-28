@@ -5,6 +5,7 @@ use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
+use crate::get_env_or_panic;
 
 static SDK_METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
 
@@ -37,8 +38,8 @@ pub fn get_or_init_meter_provider(oltp_grpc_url: &str) -> SdkMeterProvider {
 }
 
 pub static GLOBAL_METER: LazyLock<Meter> = LazyLock::new(|| {
-    let scope = InstrumentationScope::builder(env!("CARGO_PKG_NAME"))
-        .with_version(env!("CARGO_PKG_VERSION"))
+    let scope = InstrumentationScope::builder(get_env_or_panic("CARGO_PKG_NAME"))
+        .with_version(get_env_or_panic("CARGO_PKG_VERSION"))
         .build();
     global::meter_with_scope(scope)
 });
